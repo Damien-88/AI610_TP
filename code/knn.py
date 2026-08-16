@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,19 +15,25 @@ from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
 @dataclass
 class Config:
+	"""Configuration for K-Nearest Neighbors model training."""
+
 	random_state: int = 42
 	test_size: float = 0.2
 	cv_folds: int = 5
+	# Odd values only, to avoid tie votes in binary classification.
 	candidate_k_values: tuple[int, ...] = (3, 5, 7, 9, 11, 13, 15, 17, 19, 21)
 
 
-def build_features(df: pd.DataFrame) -> pd.DataFrame:
+def build_features(df):
+	"""Builds features for the Titanic dataset."""
+
 	features = df.copy()
 
 	# Add simple engineered features that help similarity-based models.
 	features["FamilySize"] = features["SibSp"] + features["Parch"] + 1
 	features["IsAlone"] = (features["FamilySize"] == 1).astype(int)
 
+	# Extract the honorific (e.g. "Mr", "Miss") between the comma and period in "Last, Title. First".
 	title_series = (
 		features["Name"]
 		.fillna("")
@@ -42,13 +46,16 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
 	return features
 
 
-def make_pipeline() -> Pipeline:
+def make_pipeline():
+	"""Creates a scikit-learn pipeline for KNN classification."""
+
 	numeric_features = ["Pclass", "Age", "SibSp", "Parch", "Fare", "FamilySize", "IsAlone"]
 	categorical_features = ["Sex", "Embarked", "Title"]
 
 	numeric_transformer = Pipeline(
 		steps=[
 			("imputer", SimpleImputer(strategy="median")),
+			# KNN relies on distance, so features must be on a comparable scale.
 			("scaler", StandardScaler()),
 		]
 	)
@@ -56,6 +63,7 @@ def make_pipeline() -> Pipeline:
 	categorical_transformer = Pipeline(
 		steps=[
 			("imputer", SimpleImputer(strategy="most_frequent")),
+			# Ignore categories unseen in training (e.g. test-only Embarked values) instead of erroring.
 			("encoder", OneHotEncoder(handle_unknown="ignore")),
 		]
 	)
@@ -75,14 +83,15 @@ def make_pipeline() -> Pipeline:
 	)
 
 
-def select_best_k(
-	X_train: pd.DataFrame,
-	y_train: pd.Series,
-	cfg: Config,
-) -> tuple[int, dict[int, float]]:
-	cv = StratifiedKFold(n_splits=cfg.cv_folds, shuffle=True, random_state=cfg.random_state)
-	scores_by_k: dict[int, float] = {}
+def select_best_k(X_train, y_train, cfg):
+	"""Selects the best k value for KNN using cross-validation."""
 
+	# Stratify folds so each split preserves the overall survival rate.
+	cv = StratifiedKFold(n_splits=cfg.cv_folds, shuffle=True, random_state=cfg.random_state)
+	scores_by_k = {}
+
+	# Refit a fresh pipeline per k so the preprocessor (scaler/encoder) is
+	# never fit on data outside its own fold, avoiding cross-fold leakage.
 	for k in cfg.candidate_k_values:
 		model = make_pipeline()
 		model.set_params(model__n_neighbors=k)
@@ -93,8 +102,11 @@ def select_best_k(
 	return best_k, scores_by_k
 
 
-def evaluate_predictions(y_true: pd.Series, y_pred: np.ndarray) -> dict[str, float | list[list[int]]]:
+def evaluate_predictions(y_true, y_pred):
+	"""Evaluates predictions using common classification metrics."""
+
 	cm = confusion_matrix(y_true, y_pred)
+	# Relies on binary labels {0, 1} so ravel() order is [[TN, FP], [FN, TP]].
 	tn, fp, fn, tp = cm.ravel()
 
 	metrics = {
@@ -111,7 +123,8 @@ def evaluate_predictions(y_true: pd.Series, y_pred: np.ndarray) -> dict[str, flo
 	return metrics
 
 
-def main() -> None:
+def main():
+	"""Main function to train KNN model and evaluate on Titanic dataset."""
 	cfg = Config()
 
 	root_dir = Path(__file__).resolve().parents[1]
@@ -131,6 +144,7 @@ def main() -> None:
 	y = train_df["Survived"]
 	X = train_features
 
+	# Hold out a validation set (untouched by CV) purely to report an unbiased final metric.
 	X_train, X_valid, y_train, y_valid = train_test_split(
 		X,
 		y,
@@ -172,6 +186,7 @@ def main() -> None:
 		}
 	)
 	submission_path = output_dir / "knn_submission.csv"
+	# Matches the Kaggle Titanic competition's expected submission format.
 	submission.to_csv(submission_path, index=False)
 
 	evaluation_path = output_dir / "knn_metrics.json"
