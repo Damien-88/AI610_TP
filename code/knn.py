@@ -2,11 +2,23 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+import joblib
+import matplotlib
+
+# Use a non-interactive backend since this runs headless as a script.
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
-from sklearn.metrics import accuracy_score, confusion_matrix, precision_score, recall_score
+from sklearn.metrics import (
+	accuracy_score,
+	confusion_matrix,
+	f1_score,
+	precision_score,
+	recall_score,
+)
 from sklearn.model_selection import StratifiedKFold, cross_val_score, train_test_split
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.pipeline import Pipeline
@@ -114,6 +126,7 @@ def evaluate_predictions(y_true, y_pred):
 		"precision": float(precision_score(y_true, y_pred, zero_division=0)),
 		"sensitivity_recall": float(recall_score(y_true, y_pred, zero_division=0)),
 		"specificity": float(tn / (tn + fp)) if (tn + fp) else 0.0,
+		"f1_score": float(f1_score(y_true, y_pred, zero_division=0)),
 		"confusion_matrix": cm.tolist(),
 		"true_negative": int(tn),
 		"false_positive": int(fp),
@@ -121,6 +134,74 @@ def evaluate_predictions(y_true, y_pred):
 		"true_positive": int(tp),
 	}
 	return metrics
+
+
+def plot_cv_accuracy(cv_scores, best_k, output_path):
+	"""Plots cross-validation accuracy across candidate k values."""
+
+	ks = list(cv_scores.keys())
+	accs = list(cv_scores.values())
+
+	fig, ax = plt.subplots(figsize=(7, 5))
+	ax.plot(ks, accs, marker="o", color="#4c72b0")
+	ax.axvline(best_k, color="#c44e52", linestyle="--", label=f"Best k={best_k}")
+	ax.set_title("Cross-Validation Accuracy vs k")
+	ax.set_xlabel("k")
+	ax.set_ylabel("Accuracy")
+	ax.legend()
+
+	fig.tight_layout()
+	fig.savefig(output_path)
+	plt.close(fig)
+
+
+def plot_confusion_matrix(cm, output_path):
+	"""Plots a confusion matrix heatmap with raw counts overlaid."""
+
+	fig, ax = plt.subplots(figsize=(5, 5))
+	im = ax.imshow(cm, cmap="Blues")
+	ax.set_title("Confusion Matrix")
+	ax.set_xticks([0, 1])
+	ax.set_yticks([0, 1])
+	ax.set_xticklabels(["Pred 0", "Pred 1"])
+	ax.set_yticklabels(["True 0", "True 1"])
+
+	# Overlay raw counts on each cell since imshow alone only conveys relative color intensity.
+	for i in range(cm.shape[0]):
+		for j in range(cm.shape[1]):
+			ax.text(j, i, str(cm[i, j]), ha="center", va="center", color="black", fontsize=12)
+
+	fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+	fig.tight_layout()
+	fig.savefig(output_path)
+	plt.close(fig)
+
+
+def plot_metrics_summary(evaluation, output_path):
+	"""Plots a bar chart comparing accuracy, precision, recall, specificity, and F1."""
+
+	metric_names = ["Accuracy", "Precision", "Sensitivity", "Specificity", "F1 Score"]
+	metric_values = [
+		evaluation["accuracy"],
+		evaluation["precision"],
+		evaluation["sensitivity_recall"],
+		evaluation["specificity"],
+		evaluation["f1_score"],
+	]
+
+	fig, ax = plt.subplots(figsize=(8, 5))
+	bars = ax.bar(metric_names, metric_values, color="#4c72b0")
+	ax.set_ylim(0, 1)
+	ax.set_title("Validation Metrics Summary")
+	ax.set_ylabel("Score")
+
+	# Label each bar with its value since bar height alone is hard to read precisely.
+	for bar, value in zip(bars, metric_values):
+		ax.text(bar.get_x() + bar.get_width() / 2, value + 0.02, f"{value:.3f}", ha="center", fontsize=10)
+
+	fig.tight_layout()
+	fig.savefig(output_path)
+	plt.close(fig)
 
 
 def main():
@@ -170,8 +251,16 @@ def main():
 	print(f"Precision: {evaluation['precision']:.4f}")
 	print(f"Sensitivity (Recall): {evaluation['sensitivity_recall']:.4f}")
 	print(f"Specificity: {evaluation['specificity']:.4f}")
+	print(f"F1 Score: {evaluation['f1_score']:.4f}")
 	print("Confusion Matrix [[TN, FP], [FN, TP]]:")
 	print(np.array(evaluation["confusion_matrix"]))
+
+	cv_accuracy_plot_path = output_dir / "knn_cv_accuracy.png"
+	confusion_matrix_plot_path = output_dir / "knn_confusion_matrix.png"
+	metrics_summary_plot_path = output_dir / "knn_metrics_summary.png"
+	plot_cv_accuracy(cv_scores, best_k, cv_accuracy_plot_path)
+	plot_confusion_matrix(np.array(evaluation["confusion_matrix"]), confusion_matrix_plot_path)
+	plot_metrics_summary(evaluation, metrics_summary_plot_path)
 
 	# Retrain on full training data for the final test predictions.
 	production_model = make_pipeline()
@@ -189,12 +278,20 @@ def main():
 	# Matches the Kaggle Titanic competition's expected submission format.
 	submission.to_csv(submission_path, index=False)
 
+	model_path = output_dir / "knn_model.joblib"
+	# Persisted so predict.py can load a fitted model without retraining.
+	joblib.dump(production_model, model_path)
+
 	evaluation_path = output_dir / "knn_metrics.json"
 	with evaluation_path.open("w", encoding="utf-8") as f:
 		json.dump(evaluation, f, indent=2)
 
 	print(f"Saved submission file: {submission_path}")
 	print(f"Saved evaluation metrics: {evaluation_path}")
+	print(f"Saved trained model: {model_path}")
+	print(f"Saved CV accuracy plot: {cv_accuracy_plot_path}")
+	print(f"Saved confusion matrix plot: {confusion_matrix_plot_path}")
+	print(f"Saved metrics summary plot: {metrics_summary_plot_path}")
 
 
 if __name__ == "__main__":
