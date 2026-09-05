@@ -5,9 +5,8 @@ from pathlib import Path
 import joblib
 import pandas as pd
 
+from test_cleaning import clean_titanic_columns
 from knn import build_features
-
-TITLE_OPTIONS = ["Mr", "Mrs", "Miss", "Master", "Dr", "Rev", "Unknown"]
 
 
 def prompt_choice(label, options, default):
@@ -39,7 +38,7 @@ def prompt_number(label, default, cast=float):
 
 
 def collect_passenger_from_input():
-	"""Collects the raw Titanic feature columns needed by build_features via prompts."""
+	"""Collects the raw Titanic feature columns needed by clean_titanic_columns/build_features via prompts."""
 
 	print("Enter passenger details to estimate survival probability.\n")
 
@@ -50,14 +49,10 @@ def collect_passenger_from_input():
 	parch = int(prompt_number("Number of parents/children aboard", default=0, cast=int))
 	fare = prompt_number("Fare paid", default=32.0)
 	embarked = prompt_choice("Port of embarkation", ["C", "Q", "S"], default="S")
-	title = prompt_choice("Title", TITLE_OPTIONS, default="Mr")
 
-	# Name only needs to carry the title, since build_features extracts it via regex.
-	# Title is also kept as its own column so it can be echoed back without re-parsing Name.
 	return pd.DataFrame(
 		[
 			{
-				"Name": f"Passenger, {title}. Input",
 				"Pclass": pclass,
 				"Sex": sex,
 				"Age": age,
@@ -65,7 +60,6 @@ def collect_passenger_from_input():
 				"Parch": parch,
 				"Fare": fare,
 				"Embarked": embarked,
-				"Title": title,
 			}
 		]
 	)
@@ -75,7 +69,7 @@ def passenger_summary(passenger_df):
 	"""Formats the entered passenger fields so they can be echoed alongside the prediction."""
 
 	row = passenger_df.iloc[0]
-	fields = ["Pclass", "Sex", "Age", "SibSp", "Parch", "Fare", "Embarked", "Title"]
+	fields = ["Pclass", "Sex", "Age", "SibSp", "Parch", "Fare", "Embarked"]
 	lines = [f"  {field}: {row[field]}" for field in fields]
 	return "Entered Passenger Details\n" + "\n".join(lines)
 
@@ -93,7 +87,7 @@ def load_model(model_path):
 def predict_survival(model, passenger_df):
 	"""Returns (predicted_label, survival_probability) for a single passenger row."""
 
-	features = build_features(passenger_df)
+	features = build_features(clean_titanic_columns(passenger_df))
 	prediction = model.predict(features)[0]
 	probability = model.predict_proba(features)[0][1]
 	return int(prediction), float(probability)

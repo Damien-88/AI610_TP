@@ -22,7 +22,9 @@ from sklearn.metrics import (
 from sklearn.model_selection import StratifiedKFold, cross_val_score, train_test_split
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.preprocessing import StandardScaler
+
+from test_cleaning import clean_titanic_columns
 
 
 @dataclass
@@ -37,7 +39,11 @@ class Config:
 
 
 def build_features(df):
-	"""Builds features for the Titanic dataset."""
+	"""Adds engineered features on top of an already-cleaned Titanic dataframe.
+
+	Expects the schema produced by titanic_cleaning.ipynb / test_cleaning.clean_titanic_columns
+	(Sex as 0/1, Embarked one-hot encoded, no PassengerId/Name/Ticket/Cabin).
+	"""
 
 	features = df.copy()
 
@@ -45,47 +51,37 @@ def build_features(df):
 	features["FamilySize"] = features["SibSp"] + features["Parch"] + 1
 	features["IsAlone"] = (features["FamilySize"] == 1).astype(int)
 
-	# Extract the honorific (e.g. "Mr", "Miss") between the comma and period in "Last, Title. First".
-	title_series = (
-		features["Name"]
-		.fillna("")
-		.str.extract(r",\s*([^\.]+)\.", expand=False)
-		.fillna("Unknown")
-		.str.strip()
-	)
-	features["Title"] = title_series
-
 	return features
 
 
 def make_pipeline():
 	"""Creates a scikit-learn pipeline for KNN classification."""
 
-	numeric_features = ["Pclass", "Age", "SibSp", "Parch", "Fare", "FamilySize", "IsAlone"]
-	categorical_features = ["Sex", "Embarked", "Title"]
+	# All features are numeric after build_features (Sex/Embarked are already encoded).
+	numeric_features = [
+		"Pclass",
+		"Sex",
+		"Age",
+		"SibSp",
+		"Parch",
+		"Fare",
+		"Embarked_C",
+		"Embarked_Q",
+		"Embarked_S",
+		"FamilySize",
+		"IsAlone",
+	]
 
 	numeric_transformer = Pipeline(
 		steps=[
+			# cleaned_train.csv has no missing values, but raw test.csv still has missing Age/Fare.
 			("imputer", SimpleImputer(strategy="median")),
 			# KNN relies on distance, so features must be on a comparable scale.
 			("scaler", StandardScaler()),
 		]
 	)
 
-	categorical_transformer = Pipeline(
-		steps=[
-			("imputer", SimpleImputer(strategy="most_frequent")),
-			# Ignore categories unseen in training (e.g. test-only Embarked values) instead of erroring.
-			("encoder", OneHotEncoder(handle_unknown="ignore")),
-		]
-	)
-
-	preprocessor = ColumnTransformer(
-		transformers=[
-			("num", numeric_transformer, numeric_features),
-			("cat", categorical_transformer, categorical_features),
-		]
-	)
+	preprocessor = ColumnTransformer(transformers=[("num", numeric_transformer, numeric_features)])
 
 	return Pipeline(
 		steps=[
@@ -213,17 +209,20 @@ def main():
 	output_dir = root_dir / "code" / "outputs"
 	output_dir.mkdir(parents=True, exist_ok=True)
 
-	train_path = data_dir / "train.csv"
+	# cleaned_train.csv was already cleaned/encoded by titanic_cleaning.ipynb; use it as-is.
+	# test.csv is still in the raw Kaggle schema, so encode it the same way via test_cleaning.
+	train_path = data_dir / "cleaned_train.csv"
 	test_path = data_dir / "test.csv"
 
 	train_df = pd.read_csv(train_path)
 	test_df = pd.read_csv(test_path)
 
-	train_features = build_features(train_df)
-	test_features = build_features(test_df)
-
+	# Survived is the prediction target, so it must be separated from X before any features
+	# are built from it, otherwise the model would train with the label as an input column.
 	y = train_df["Survived"]
-	X = train_features
+	X = build_features(train_df.drop(columns=["Survived"]))
+
+	test_features = build_features(clean_titanic_columns(test_df))
 
 	# Hold out a validation set (untouched by CV) purely to report an unbiased final metric.
 	X_train, X_valid, y_train, y_valid = train_test_split(

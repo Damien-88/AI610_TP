@@ -11,15 +11,26 @@ survival for a single passenger you describe interactively.
 
 ## What Is Included
 
-- `code/knn.ipynb`: notebook version of the full analysis with EDA,
-  visualizations, and written interpretation.
-- `code/knn.py`: script version of the same pipeline for repeatable
-  execution; also persists the trained model and saves plots as PNGs.
+- `code/titanic_cleaning.ipynb`: standalone data-preparation notebook that
+  cleans `data/titanic/train.csv` (drops `PassengerId`/`Name`/`Ticket`/`Cabin`,
+  drops rows with missing `Age`/`Embarked`, encodes `Sex`/`Embarked`) and
+  writes the result to `data/titanic/cleaned_train.csv`. This is the file
+  the KNN pipeline actually trains on.
+- `code/test_cleaning.py`: shared cleaning helpers
+  (`drop_identifier_columns`, `encode_categoricals`, `clean_titanic_columns`)
+  that mirror the steps in `titanic_cleaning.ipynb`. Used by that notebook
+  itself, and by `knn.py`/`knn.ipynb`/`predict.py` to bring the still-raw
+  `test.csv` (and interactively entered passengers) into the same schema
+  as `cleaned_train.csv`.
+- `code/knn.py`: script version of the KNN pipeline; trains on
+  `cleaned_train.csv`, persists the trained model, and saves plots as PNGs.
+- `code/knn.ipynb`: notebook version of the analysis with EDA,
+  visualizations, and a written interpretation. It defines its own
+  `build_features`/`make_pipeline` independently of `knn.py` (the two are
+  kept as separate, self-contained implementations) but produces the same
+  results since both consume `cleaned_train.csv` and `test_cleaning.py`.
 - `code/predict.py`: interactive CLI that loads the persisted model and
   estimates survival probability for a passenger you describe.
-- `code/titanic_cleaning.ipynb`: standalone exploratory notebook that
-  produced `data/titanic/cleaned_train.csv`; it is not part of the KNN
-  training pipeline, which builds its own features from the raw data.
 - `code/outputs/knn_submission.csv`: generated Kaggle-style submission file.
 - `code/outputs/knn_metrics.json`: saved validation metrics and CV scores.
 - `code/outputs/knn_model.joblib`: trained pipeline persisted for reuse by
@@ -27,63 +38,73 @@ survival for a single passenger you describe interactively.
 - `code/outputs/knn_cv_accuracy.png`, `knn_confusion_matrix.png`,
   `knn_metrics_summary.png`: saved visualizations of CV accuracy vs. `k`,
   the confusion matrix, and the validation metrics summary.
-- `data/titanic/train.csv`: raw training data (used directly by KNN).
-- `data/titanic/test.csv`: raw test data.
-- `data/titanic/cleaned_train.csv`: pre-encoded training data produced by
-  `titanic_cleaning.ipynb`; not consumed by the KNN pipeline.
+- `data/titanic/train.csv`: raw training data. Consumed by
+  `titanic_cleaning.ipynb` (to produce `cleaned_train.csv`) and by
+  `knn.ipynb`'s exploratory data analysis section; not read by `knn.py`.
+- `data/titanic/test.csv`: raw test data, cleaned on the fly via
+  `test_cleaning.py` before being scored.
+- `data/titanic/cleaned_train.csv`: pre-encoded, missing-value-free training
+  data produced by `titanic_cleaning.ipynb`; this is what `knn.py` and
+  `knn.ipynb` actually train on.
 - `data/titanic/gender_submission.csv`: example submission format.
 
 ## Approach
 
-The model uses the following steps:
+`titanic_cleaning.ipynb` is a one-time step that turns `train.csv` into
+`cleaned_train.csv`: it drops `PassengerId`/`Name`/`Ticket`/`Cabin`, drops
+the small number of rows with missing `Age`/`Embarked`, maps `Sex` to 0/1,
+and one-hot encodes `Embarked` into `Embarked_C`/`Embarked_Q`/`Embarked_S`.
 
-1. Load the raw Titanic training and test data (`train.csv` / `test.csv`).
-   Both share the same raw columns (`Name`, `Sex`, `Embarked`, etc.), which
-   the feature engineering step below depends on.
-2. Engineer additional features:
+The KNN pipeline (`knn.py` / `knn.ipynb`) then works as follows:
+
+1. Load `cleaned_train.csv` directly as the training data (no re-cleaning),
+   and separate the `Survived` label from the feature columns.
+2. Load the still-raw `test.csv` and run it through `test_cleaning.py`'s
+   `clean_titanic_columns` so it matches the training schema.
+3. Engineer two additional features on both sets:
    - `FamilySize` (`SibSp` + `Parch` + 1)
    - `IsAlone` (1 if `FamilySize` == 1)
-   - passenger `Title` extracted from the name (e.g. "Mr", "Miss")
-3. Preprocess numeric and categorical variables separately via a
-   `ColumnTransformer`:
-   - Numeric (`Pclass`, `Age`, `SibSp`, `Parch`, `Fare`, `FamilySize`,
-     `IsAlone`): median imputation, then standardization (required since
-     KNN is distance-based).
-   - Categorical (`Sex`, `Embarked`, `Title`): most-frequent imputation,
-     then one-hot encoding (unseen categories ignored).
-4. Select the best `k` (odd values 3–21) using 5-fold stratified
+4. Preprocess all (now-numeric) features via a `ColumnTransformer` with a
+   single branch: median imputation (handles the missing `Age`/`Fare`
+   values still present in `test.csv`) followed by standardization
+   (required since KNN is distance-based).
+5. Select the best `k` (odd values 3–21) using 5-fold stratified
    cross-validation, refitting the preprocessing + model pipeline per fold
    to avoid cross-fold leakage.
-5. Evaluate the final model on a held-out validation split (never used
+6. Evaluate the final model on a held-out validation split (never used
    during cross-validation).
-6. Retrain on the full training data, generate predictions for the test
+7. Retrain on the full training data, generate predictions for the test
    set, and persist the fitted pipeline for reuse.
+
+`predict.py` reuses `clean_titanic_columns` and `build_features` so a
+single interactively-entered passenger goes through the same steps as
+`test.csv`.
 
 ## Reported Findings
 
 The saved evaluation metrics (`code/outputs/knn_metrics.json`) show the
 following validation results:
 
-- Best `k`: `15`
-- Accuracy: `0.8101`
-- Precision: `0.8070`
-- Sensitivity / recall: `0.6667`
-- Specificity: `0.9000`
-- F1 score: `0.7302`
-- Confusion matrix: `[[99, 11], [23, 46]]`
+- Best `k`: `7`
+- Accuracy: `0.7902`
+- Precision: `0.7414`
+- Sensitivity / recall: `0.7414`
+- Specificity: `0.8235`
+- F1 score: `0.7414`
+- Confusion matrix: `[[70, 15], [15, 43]]`
 
 Interpretation:
 
-- The model is strong at identifying non-survivors (high specificity) and
-  maintains good precision when predicting survivors.
-- Recall is lower than specificity, meaning some true survivors are still
-  missed; the F1 score (which balances precision and recall) sits below
-  both, confirming that trade-off.
+- The model is somewhat stronger at identifying non-survivors (specificity
+  0.82) than survivors, though precision and recall are balanced (both
+  0.7414), meaning false positives and false negatives occur at similar
+  rates.
 - This behavior is consistent with distance-based models on mixed-feature
   tabular data, where class boundaries can overlap.
-- Overall, KNN provides a solid, interpretable baseline for this task,
-  with stable accuracy and few false positives, but reduced sensitivity to
-  all survivor cases.
+- Overall, KNN provides a solid, interpretable baseline for this task.
+  Its strength here is balanced precision/recall with reasonable overall
+  accuracy, while its main limitation is comparatively lower specificity
+  than a model tuned to favor non-survivor predictions.
 
 ## Requirements
 
@@ -124,8 +145,8 @@ python code/predict.py
 ```
 
 and answer the interactive prompts (passenger class, sex, age, siblings/
-spouses aboard, parents/children aboard, fare, port of embarkation, and
-title). The script prints the estimated survival probability and predicted
+spouses aboard, parents/children aboard, fare, and port of embarkation).
+The script prints the estimated survival probability and predicted
 outcome.
 
 ## Output Files
@@ -151,6 +172,7 @@ AI610_TP/
 │   ├── knn.ipynb
 │   ├── knn.py
 │   ├── predict.py
+│   ├── test_cleaning.py
 │   ├── titanic_cleaning.ipynb
 │   └── outputs/
 │       ├── knn_confusion_matrix.png
@@ -166,4 +188,3 @@ AI610_TP/
         ├── test.csv
         └── train.csv
 ```
-
